@@ -70,8 +70,7 @@ def test_defaults_and_required_load(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     ):
         monkeypatch.delenv(name, raising=False)
     config = load_config(env)
-    assert config.debounce_seconds == 20
-    assert config.debounce_in_recommended_range
+    assert config.debounce_seconds == 0
     assert config.show_size is False
     assert config.show_notional is False
     assert config.telegram_chat_id == "-100123"
@@ -103,3 +102,29 @@ def test_read_client_has_no_trading_methods() -> None:
     ):
         assert path not in source, path
     assert "/withdraw" not in source
+
+
+def test_existing_debounce_env_still_loads(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
+    env = tmp_path / "debounce.env"
+    env.write_text(
+        "\n".join(
+            [
+                "BINANCE_API_KEY=demo-key",
+                "BINANCE_API_SECRET=demo-secret",
+                "TELEGRAM_BOT_TOKEN=demo-token",
+                "TELEGRAM_CHAT_ID=-100123",
+                "DEBOUNCE_SECONDS=20",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    for name in (
+        "BINANCE_API_KEY",
+        "BINANCE_API_SECRET",
+        "TELEGRAM_BOT_TOKEN",
+        "TELEGRAM_CHAT_ID",
+        "DEBOUNCE_SECONDS",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    config = load_config(env)
+    assert config.debounce_seconds == 20

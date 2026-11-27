@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-DEFAULT_DEBOUNCE_SECONDS = 20
+DEFAULT_DEBOUNCE_SECONDS = 0
 MIN_DEBOUNCE_SECONDS = 15
 MAX_DEBOUNCE_SECONDS = 30
 DEFAULT_STATE_FILE = Path("data/state.json")
@@ -45,8 +45,8 @@ def _debounce_seconds() -> int:
         value = int(raw)
     except ValueError as exc:
         raise ConfigError("DEBOUNCE_SECONDS must be an integer.") from exc
-    if value <= 0:
-        raise ConfigError("DEBOUNCE_SECONDS must be a positive integer.")
+    if value < 0:
+        raise ConfigError("DEBOUNCE_SECONDS must be a non-negative integer.")
     return value
 
 

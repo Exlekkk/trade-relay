@@ -1,4 +1,4 @@
-"""Wire config, user-data watch, debounce, and Telegram card updates."""
+"""Wire config, user-data watch, and Telegram card updates."""
 
 from __future__ import annotations
 
@@ -12,35 +12,16 @@ from trade_relay.binance_watch import BinanceReadClient, UserDataWatch
 from trade_relay.book import AccountBook, CardChange
 from trade_relay.card import render_card
 from trade_relay.config import Config, ConfigError, load_config
-from trade_relay.debounce import KeyDebouncer
-from trade_relay.models import ChangeReason, TradeCardState
+from trade_relay.models import TradeCardState
 from trade_relay.telegram_out import TelegramCardSink
 
 logger = logging.getLogger(__name__)
-
-# Entry-price and close-limit amendments wait ~debounce seconds; everything
-# else flushes a pending debounce and publishes immediately.
-IMMEDIATE_REASONS = frozenset(
-    {
-        ChangeReason.SNAPSHOT,
-        ChangeReason.ENTRY_NEW,
-        ChangeReason.ENTRY_CANCELED,
-        ChangeReason.FILL,
-        ChangeReason.POSITION,
-        ChangeReason.TP_SL,
-        ChangeReason.CLOSE_NEW,
-        ChangeReason.CLOSE_CANCELED,
-        ChangeReason.CLOSE_FILL,
-        ChangeReason.CLOSED,
-    }
-)
 
 
 class TradeRelayApp:
     def __init__(self, config: Config) -> None:
         self.config = config
         self.book = AccountBook()
-        self.debouncer: KeyDebouncer[TradeCardState] = KeyDebouncer(config.debounce_seconds)
         self.client = BinanceReadClient(
             config.binance_api_key,
             config.binance_api_secret,
@@ -60,15 +41,9 @@ class TradeRelayApp:
         )
 
     async def run(self) -> None:
-        if not self.config.debounce_in_recommended_range:
-            logger.warning(
-                "DEBOUNCE_SECONDS=%s is outside the recommended 15-30s range",
-                self.config.debounce_seconds,
-            )
         try:
             await self.watch.run()
         finally:
-            await self.debouncer.flush_all()
             await self.telegram.aclose()
             await self.client.aclose()
 
@@ -81,22 +56,9 @@ class TradeRelayApp:
             await self._route(change)
 
     async def _route(self, change: CardChange) -> None:
-        if change.reason in {ChangeReason.ENTRY_AMENDED, ChangeReason.CLOSE_AMENDED}:
-            self.debouncer.schedule(change.key, change.card, self._publish_debounced)
-            kind = "entry" if change.reason == ChangeReason.ENTRY_AMENDED else "close"
-            logger.info("Debouncing %s amend for %s", kind, change.key)
-            return
-        if change.reason in IMMEDIATE_REASONS or self.debouncer.has_pending(change.key):
-            if self.debouncer.has_pending(change.key):
-                self.debouncer.cancel(change.key)
-            await self._publish(change.card)
-            return
+        # Every card change, including entry-price and close-limit
+        # amendments, publishes immediately. Debounce is not used.
         await self._publish(change.card)
-
-    async def _publish_debounced(self, key: str, card: TradeCardState) -> None:
-        # Prefer the latest book state in case more events landed mid-flight.
-        latest = self.book.get_card(key) or card
-        await self._publish(latest)
 
     async def _publish(self, card: TradeCardState) -> None:
         html = render_card(
@@ -106,7 +68,7 @@ class TradeRelayApp:
             display_tz=self.config.display_tz,
         )
         try:
-            message_id = await self.telegram.publish(card.key, html)
+            message_id = await self.telegram.publish(card.key, html, status=card.status)
             logger.info(
                 "Updated card %s status=%s message_id=%s",
                 card.key,

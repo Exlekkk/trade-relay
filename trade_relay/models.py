@@ -259,6 +259,7 @@ class CardChange:
 
 @dataclass
 class LocalRelayState:
-    """Persisted Telegram message ids, keyed by trade card key."""
+    """Persisted Telegram message ids and last published card status."""
 
     message_ids: dict[str, int] = field(default_factory=dict)
+    last_statuses: dict[str, str] = field(default_factory=dict)
