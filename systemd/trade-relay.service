@@ -1,0 +1,21 @@
+[Unit]
+Description=Binance-to-Telegram trade relay
+Documentation=https://github.com/Exlekkk/trade-relay
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Adjust User and WorkingDirectory to the install path on the host.
+# User=trade-relay
+WorkingDirectory=/opt/trade-relay
+# Point this at a local env file that is NOT committed. The unit itself has no secrets.
+EnvironmentFile=/opt/trade-relay/.env
+ExecStart=/opt/trade-relay/venv/bin/python -m trade_relay
+Restart=on-failure
+RestartSec=5
+# The process only needs outbound HTTPS to Binance and Telegram.
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target

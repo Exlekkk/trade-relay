@@ -1,0 +1,11 @@
+[project]
+name = "trade-relay"
+version = "0.1.0"
+description = "Broadcast Binance futures order updates to a Telegram group as a live trade card"
+readme = "README.md"
+requires-python = ">=3.11"
+# Runtime pins live in requirements.txt
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
