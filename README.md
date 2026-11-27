@@ -11,7 +11,7 @@ Friends read the card and place their own orders. This is a **signal broadcast**
 - Watch a leader account with a **read-only** Binance API key
 - Track working orders (new / amend / cancel), fills and position changes, reduce-only close limits, and TP/SL (including algo / conditional orders)
 - Edit a single Telegram message per trade when something changes, instead of spamming a new message for every tweak
-- Debounce entry-price and close-limit amendments: wait ~15–30 seconds after the last change, then update the card once
+- After 已撤单 or 已平仓, the next trade on the same symbol and side starts a new Telegram message
 
 **Is not**
 
@@ -35,8 +35,8 @@ Create a **dedicated** Binance API key for this bot:
 1. On start (and after every reconnect) the bot takes a REST snapshot of open orders, positions, and open algo / conditional orders.
 2. It keeps a `listenKey` and follows the USD-M futures **user data stream** (`ORDER_TRADE_UPDATE`, `ACCOUNT_UPDATE`, `ALGO_UPDATE`).
 3. An in-memory book turns those events into a per-trade card (symbol + position side): 开单 / 已改价 / 已开仓 / 已挂平仓 / 已改平仓 / 已减仓 / 已平仓 / 已撤单. Quantity and notional stay off unless configured. A stop-loss line is shown only when a real SL is working; a reduce-only LIMIT is the close-limit (平仓挂单), not an empty TP placeholder.
-4. Entry-price and close-limit amendments are **debounced**. Fills, cancels, new entries, new close limits, TP/SL changes, and position changes update the card immediately and cancel any pending debounce for that trade.
-5. Telegram `sendMessage` creates the card; later changes use `editMessageText` on the same message. Message ids are stored in a local, gitignored state file.
+4. Every card change, including entry-price and close-limit amendments, updates Telegram immediately.
+5. Telegram `sendMessage` creates the card; later changes on the same trade use `editMessageText`. After 已撤单 or 已平仓, the next trade on that key is a new `sendMessage`. Message ids and the last published status are stored in a local, gitignored state file.
 
 ## Setup
 
@@ -62,7 +62,7 @@ A sample systemd unit is in `systemd/trade-relay.service` (uses `EnvironmentFile
 
 ## Tests
 
-Unit tests cover debounce, card rendering, and book state transitions only. They do not call Binance or Telegram.
+Unit tests cover card rendering, book state transitions, Telegram send-or-edit, and publish routing only. They do not call Binance or Telegram.
 
 ```bash
 pytest

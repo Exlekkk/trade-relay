@@ -5,15 +5,17 @@ from __future__ import annotations
 import json
 import logging
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import httpx
 
-from trade_relay.models import LocalRelayState
+from trade_relay.models import CardStatus, LocalRelayState
 
 logger = logging.getLogger(__name__)
 
 TELEGRAM_API = "https://api.telegram.org"
+
+TERMINAL_CARD_STATUSES = frozenset({CardStatus.CANCELED.value, CardStatus.CLOSED.value})
 
 
 class TelegramError(RuntimeError):
@@ -21,7 +23,12 @@ class TelegramError(RuntimeError):
 
 
 class TelegramCardSink:
-    """Create one message per trade key, then edit that same message."""
+    """Create one message per trade key, then edit that same message.
+
+    After a card is published as canceled or closed, the next new trade on
+    the same key starts a fresh Telegram message instead of editing the
+    finished card. Last status is persisted so this survives a restart.
+    """
 
     def __init__(
         self,
@@ -46,21 +53,39 @@ class TelegramCardSink:
     def message_id_for(self, key: str) -> Optional[int]:
         return self._state.message_ids.get(key)
 
-    async def publish(self, key: str, html: str) -> int:
+    def last_status_for(self, key: str) -> Optional[str]:
+        return self._state.last_statuses.get(key)
+
+    async def publish(
+        self,
+        key: str,
+        html: str,
+        status: Union[CardStatus, str, None] = None,
+    ) -> int:
         """Edit the existing card for ``key``, or send a new message."""
+        status_value = _status_value(status)
+        if _should_open_new_message(self._state.last_statuses.get(key), status_value):
+            self._state.message_ids.pop(key, None)
         existing = self._state.message_ids.get(key)
         if existing is not None:
             try:
                 await self._edit(existing, html)
+                self._remember(key, existing, status_value)
                 return existing
             except TelegramError as exc:
                 if _is_not_modified(exc):
+                    self._remember(key, existing, status_value)
                     return existing
                 logger.warning("editMessageText failed for %s (id=%s): %s; sending a new message", key, existing, exc)
         message_id = await self._send(html)
-        self._state.message_ids[key] = message_id
-        self._save_state()
+        self._remember(key, message_id, status_value)
         return message_id
+
+    def _remember(self, key: str, message_id: int, status: Optional[str]) -> None:
+        self._state.message_ids[key] = message_id
+        if status:
+            self._state.last_statuses[key] = status
+        self._save_state()
 
     async def _client_obj(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -119,21 +144,50 @@ class TelegramCardSink:
             return LocalRelayState()
         ids = raw.get("message_ids") or raw.get("cards") or {}
         parsed: dict[str, int] = {}
+        statuses: dict[str, str] = {}
         if isinstance(ids, dict):
             for key, value in ids.items():
-                if isinstance(value, dict) and "message_id" in value:
-                    value = value["message_id"]
-                if isinstance(value, int):
+                if isinstance(value, dict):
+                    mid = value.get("message_id")
+                    st = value.get("status")
+                    if isinstance(mid, int):
+                        parsed[str(key)] = mid
+                    if isinstance(st, str) and st:
+                        statuses[str(key)] = st
+                elif isinstance(value, int):
                     parsed[str(key)] = value
-        return LocalRelayState(message_ids=parsed)
+        raw_statuses = raw.get("last_statuses") or {}
+        if isinstance(raw_statuses, dict):
+            for key, value in raw_statuses.items():
+                if isinstance(value, str) and value:
+                    statuses[str(key)] = value
+        return LocalRelayState(message_ids=parsed, last_statuses=statuses)
 
     def _save_state(self) -> None:
         path = self._state_file
         path.parent.mkdir(parents=True, exist_ok=True)
         tmp = path.with_suffix(path.suffix + ".tmp")
-        payload = {"message_ids": self._state.message_ids}
+        payload = {
+            "message_ids": self._state.message_ids,
+            "last_statuses": self._state.last_statuses,
+        }
         tmp.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         tmp.replace(path)
+
+
+def _status_value(status: Union[CardStatus, str, None]) -> Optional[str]:
+    if status is None:
+        return None
+    if isinstance(status, CardStatus):
+        return status.value
+    text = str(status).strip()
+    return text or None
+
+
+def _should_open_new_message(last_status: Optional[str], new_status: Optional[str]) -> bool:
+    if new_status is None or new_status in TERMINAL_CARD_STATUSES:
+        return False
+    return last_status in TERMINAL_CARD_STATUSES
 
 
 def _is_not_modified(exc: TelegramError) -> bool:
