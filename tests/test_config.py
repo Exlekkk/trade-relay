@@ -72,7 +72,7 @@ def test_defaults_and_required_load(monkeypatch: pytest.MonkeyPatch, tmp_path: P
     config = load_config(env)
     assert config.debounce_seconds == 20
     assert config.debounce_in_recommended_range
-    assert config.show_size is True
+    assert config.show_size is False
     assert config.show_notional is False
     assert config.telegram_chat_id == "-100123"
 
