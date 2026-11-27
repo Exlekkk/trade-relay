@@ -15,8 +15,11 @@ class CardStatus(str, Enum):
     PLANNED = "planned"
     FILLED = "filled"
     AMENDED = "amended"
+    CLOSE_WORKING = "close_working"
+    CLOSE_AMENDED = "close_amended"
     REDUCED = "reduced"
     CLOSED = "closed"
+    CANCELED = "canceled"
 
 
 class ChangeReason(str, Enum):
@@ -27,6 +30,10 @@ class ChangeReason(str, Enum):
     FILL = "fill"
     POSITION = "position"
     TP_SL = "tp_sl"
+    CLOSE_NEW = "close_new"
+    CLOSE_AMENDED = "close_amended"
+    CLOSE_CANCELED = "close_canceled"
+    CLOSE_FILL = "close_fill"
     CLOSED = "closed"
 
 
@@ -47,6 +54,11 @@ PROTECTIVE_ORDER_TYPES = frozenset(
 
 TP_ORDER_TYPES = frozenset({"TAKE_PROFIT", "TAKE_PROFIT_MARKET"})
 SL_ORDER_TYPES = frozenset({"STOP", "STOP_MARKET", "TRAILING_STOP_MARKET"})
+LIMIT_ORDER_TYPES = frozenset({"LIMIT", "LIMIT_MAKER"})
+LIMIT_CLOSE_TYPES = frozenset({"LIMIT", "LIMIT_MAKER", "TAKE_PROFIT", "STOP"})
+MARKET_CLOSE_TYPES = frozenset(
+    {"MARKET", "STOP_MARKET", "TAKE_PROFIT_MARKET", "TRAILING_STOP_MARKET"}
+)
 
 # ORDER_TRADE_UPDATE ``o.X`` values that mean the order is no longer working.
 TERMINAL_ORDER_STATUSES = frozenset(
@@ -117,6 +129,7 @@ class WorkingOrder:
     client_order_id: str = ""
     is_algo: bool = False
     execution_type: str = ""
+    last_fill_price: Decimal = ZERO
 
     @property
     def display_price(self) -> Decimal:
@@ -137,11 +150,20 @@ class WorkingOrder:
             return self.stop_price
         return self.price
 
+    def fill_price(self) -> Decimal:
+        """Actual fill price from a TRADE event; 0 if the stream did not provide one."""
+        if self.average_price > 0:
+            return self.average_price
+        if self.last_fill_price > 0:
+            return self.last_fill_price
+        return ZERO
+
     def is_protective(self) -> bool:
         return (
             self.is_algo
             or self.order_type in PROTECTIVE_ORDER_TYPES
-            or self.close_position
+            or self.is_close_exit()
+            or self.is_stop_loss()
         )
 
     def is_entry(self) -> bool:
@@ -152,6 +174,42 @@ class WorkingOrder:
 
     def is_stop_loss(self) -> bool:
         return self.order_type in SL_ORDER_TYPES
+
+    def is_close_exit(self) -> bool:
+        """Working close / take-profit, including reduce-only LIMIT (not SL)."""
+        if self.is_stop_loss():
+            return False
+        if self.is_take_profit():
+            return True
+        if self.order_type in LIMIT_ORDER_TYPES and (self.reduce_only or self.close_position):
+            return True
+        return False
+
+    def is_exit_fill(self) -> bool:
+        """A fill that reduces or closes a position."""
+        if self.is_stop_loss() or self.is_take_profit() or self.is_close_exit():
+            return True
+        return self.reduce_only or self.close_position
+
+    def close_display_price(self) -> Decimal:
+        """Price shown as 平仓挂单: trigger for algo TP, else the limit price."""
+        if self.is_algo or self.order_type in TP_ORDER_TYPES:
+            price = self.protective_price
+            if price > 0:
+                return price
+        return self.display_price
+
+    def exit_kind(self) -> Optional[str]:
+        typ = (self.order_type or "").upper()
+        if typ in MARKET_CLOSE_TYPES:
+            return "market"
+        if typ in LIMIT_CLOSE_TYPES:
+            return "limit"
+        if typ.endswith("MARKET"):
+            return "market"
+        if typ:
+            return "limit"
+        return None
 
 
 @dataclass
@@ -175,11 +233,16 @@ class TradeCardState:
     side: str
     status: CardStatus
     planned_entry: Optional[Decimal] = None
+    previous_planned_entry: Optional[Decimal] = None
     filled_entry: Optional[Decimal] = None
     quantity: Optional[Decimal] = None
     notional: Optional[Decimal] = None
     stop_loss: Optional[Decimal] = None
     take_profit: Optional[Decimal] = None
+    working_close: Optional[Decimal] = None
+    previous_close: Optional[Decimal] = None
+    filled_close: Optional[Decimal] = None
+    close_kind: Optional[str] = None
     updated_event_time: int = 0
 
     def with_status(self, status: CardStatus) -> "TradeCardState":

@@ -9,11 +9,14 @@ from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from trade_relay.models import CardStatus, TradeCardState, format_decimal
 
 STATUS_LABELS = {
-    CardStatus.PLANNED: "计划开仓",
+    CardStatus.PLANNED: "开单",
     CardStatus.FILLED: "已开仓",
     CardStatus.AMENDED: "已改价",
+    CardStatus.CLOSE_WORKING: "已挂平仓",
+    CardStatus.CLOSE_AMENDED: "已改平仓",
     CardStatus.REDUCED: "已减仓",
     CardStatus.CLOSED: "已平仓",
+    CardStatus.CANCELED: "已撤单",
 }
 
 SIDE_LABELS = {
@@ -21,6 +24,11 @@ SIDE_LABELS = {
     "SHORT": "做空",
     "BUY": "做多",
     "SELL": "做空",
+}
+
+CLOSE_KIND_LABELS = {
+    "limit": "限价",
+    "market": "市价",
 }
 
 
@@ -42,24 +50,20 @@ def _when(card: TradeCardState, tz_name: str) -> str:
     return dt.strftime("%m-%d %H:%M")
 
 
-def _entry_line(card: TradeCardState) -> str:
-    if card.status in {CardStatus.FILLED, CardStatus.REDUCED, CardStatus.CLOSED}:
-        if card.filled_entry is not None:
-            return f"开仓价：{format_decimal(card.filled_entry)}（成交均价）"
-        if card.planned_entry is not None:
-            return f"开仓价：{format_decimal(card.planned_entry)}（挂单）"
-        return "开仓价：—"
-    if card.planned_entry is not None:
-        return f"开仓价：{format_decimal(card.planned_entry)}（挂单）"
-    if card.filled_entry is not None:
-        return f"开仓价：{format_decimal(card.filled_entry)}（成交均价）"
-    return "开仓价：—"
+def _pad_label(label: str) -> str:
+    """Pad so prices line up, counting CJK characters as width 2."""
+    width = sum(2 if ord(ch) > 127 else 1 for ch in label)
+    return label + " " * max(1, 10 - width)
+
+
+def _line(label: str, value: str) -> str:
+    return f"{_pad_label(label)}{value}"
 
 
 def render_card(
     card: TradeCardState,
     *,
-    show_size: bool = True,
+    show_size: bool = False,
     show_notional: bool = False,
     display_tz: str = "Asia/Shanghai",
 ) -> str:
@@ -68,18 +72,52 @@ def render_card(
     status = STATUS_LABELS.get(card.status, card.status.value)
     symbol = escape(card.symbol)
     lines = [
-        f"<b>📊 {symbol}</b>  {escape(side)} · {escape(status)}",
+        f"{symbol}  {escape(side)} · {escape(status)}",
         "",
-        escape(_entry_line(card)),
     ]
+
+    open_statuses = {
+        CardStatus.FILLED,
+        CardStatus.REDUCED,
+        CardStatus.CLOSE_WORKING,
+        CardStatus.CLOSE_AMENDED,
+        CardStatus.CLOSED,
+    }
+    if card.status in open_statuses:
+        if card.filled_entry is not None:
+            lines.append(escape(_line("开仓均价", format_decimal(card.filled_entry))))
+        elif card.planned_entry is not None:
+            lines.append(escape(_line("挂单开仓", format_decimal(card.planned_entry))))
+    else:
+        if card.planned_entry is not None:
+            lines.append(escape(_line("挂单开仓", format_decimal(card.planned_entry))))
+        elif card.filled_entry is not None:
+            lines.append(escape(_line("开仓均价", format_decimal(card.filled_entry))))
+        if card.status == CardStatus.AMENDED and card.previous_planned_entry is not None:
+            lines.append(escape(_line("改前", format_decimal(card.previous_planned_entry))))
+
+    if card.status in {CardStatus.CLOSE_WORKING, CardStatus.CLOSE_AMENDED, CardStatus.REDUCED}:
+        if card.working_close is not None:
+            lines.append(escape(_line("平仓挂单", format_decimal(card.working_close))))
+        if card.status == CardStatus.CLOSE_AMENDED and card.previous_close is not None:
+            lines.append(escape(_line("改前", format_decimal(card.previous_close))))
+
+    if card.status == CardStatus.CLOSED and card.filled_close is not None:
+        price = format_decimal(card.filled_close)
+        kind = CLOSE_KIND_LABELS.get(card.close_kind or "", "")
+        value = f"{price}（{kind}）" if kind else price
+        lines.append(escape(_line("平仓价", value)))
+
+    if card.stop_loss is not None:
+        lines.append(escape(_line("止损", format_decimal(card.stop_loss))))
+
     if show_size and card.quantity is not None:
-        lines.append(escape(f"数量：{format_decimal(card.quantity)}"))
+        lines.append(escape(_line("数量", format_decimal(card.quantity))))
     if show_notional and card.notional is not None:
-        lines.append(escape(f"名义价值：{format_decimal(card.notional)} USDT"))
-    sl = format_decimal(card.stop_loss) if card.stop_loss is not None else "—"
-    tp = format_decimal(card.take_profit) if card.take_profit is not None else "—"
-    lines.append(escape(f"止损：{sl}"))
-    lines.append(escape(f"止盈：{tp}"))
-    lines.append(escape(f"状态：{status}"))
-    lines.append(escape(f"更新：{_when(card, display_tz)}"))
+        lines.append(escape(f"{_pad_label('名义价值')}{format_decimal(card.notional)} USDT"))
+
+    # Drop a trailing blank line when the body has no price rows.
+    if lines[-1] == "":
+        lines.pop()
+    lines.append(escape(f"更新 {_when(card, display_tz)}"))
     return "\n".join(lines)

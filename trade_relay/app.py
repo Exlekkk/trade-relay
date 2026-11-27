@@ -18,8 +18,8 @@ from trade_relay.telegram_out import TelegramCardSink
 
 logger = logging.getLogger(__name__)
 
-# Entry-price amendments are the only reason that waits; everything else
-# flushes a pending debounce and publishes immediately.
+# Entry-price and close-limit amendments wait ~debounce seconds; everything
+# else flushes a pending debounce and publishes immediately.
 IMMEDIATE_REASONS = frozenset(
     {
         ChangeReason.SNAPSHOT,
@@ -28,6 +28,9 @@ IMMEDIATE_REASONS = frozenset(
         ChangeReason.FILL,
         ChangeReason.POSITION,
         ChangeReason.TP_SL,
+        ChangeReason.CLOSE_NEW,
+        ChangeReason.CLOSE_CANCELED,
+        ChangeReason.CLOSE_FILL,
         ChangeReason.CLOSED,
     }
 )
@@ -78,9 +81,10 @@ class TradeRelayApp:
             await self._route(change)
 
     async def _route(self, change: CardChange) -> None:
-        if change.reason == ChangeReason.ENTRY_AMENDED:
+        if change.reason in {ChangeReason.ENTRY_AMENDED, ChangeReason.CLOSE_AMENDED}:
             self.debouncer.schedule(change.key, change.card, self._publish_debounced)
-            logger.info("Debouncing entry amend for %s", change.key)
+            kind = "entry" if change.reason == ChangeReason.ENTRY_AMENDED else "close"
+            logger.info("Debouncing %s amend for %s", kind, change.key)
             return
         if change.reason in IMMEDIATE_REASONS or self.debouncer.has_pending(change.key):
             if self.debouncer.has_pending(change.key):

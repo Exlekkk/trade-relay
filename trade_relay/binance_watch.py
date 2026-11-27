@@ -43,7 +43,7 @@ WS_MAX_AGE_SECONDS = 12 * 60 * 60
 # Documented ORDER_TRADE_UPDATE ``o`` fields used here (not an exhaustive map):
 # s symbol, c clientOrderId, S side, o type, q origQty, p price, ap avgPrice,
 # sp stopPrice, x executionType, X orderStatus, i orderId, l lastFilledQty,
-# z cumFilledQty, R reduceOnly, ps positionSide, cp closePosition.
+# z cumFilledQty, L lastFilledPrice, R reduceOnly, ps positionSide, cp closePosition.
 #
 # Documented ACCOUNT_UPDATE ``a.P[]`` fields used here:
 # s symbol, pa positionAmt, ep entryPrice, up unrealizedPnl, ps positionSide.
@@ -262,6 +262,7 @@ def parse_order_trade_update(payload: dict[str, Any]) -> Optional[tuple[WorkingO
         client_order_id=str(o.get("c", "")),
         is_algo=False,
         execution_type=str(o.get("x", "")),
+        last_fill_price=d(o.get("L")),
     )
     event_time = int(payload.get("E") or payload.get("T") or 0)
     return order, str(o.get("x", "")), event_time
